@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# This script create a postgres user readonly on the specified database
+#
+# Author : f951753
+
+# Get the first option
+DB=$1
+# Readonly username
+USER=readonly
+# Postgres master username
+MASTERUSER=pe-postgres
+# Read only username password
+PASSWD=$USER
+# Let's try to find psql binairy
+PSQL=$(locate bin/psql | tail -1)
+
+# Psql code
+$PSQL -A -t -c "CREATE ROLE "$USER" LOGIN PASSWORD '$PASSWD';"
+$PSQL -A -t -c "GRANT CONNECT ON DATABASE \"$DB\" TO "$USER";"
+$PSQL -A -t -c "GRANT USAGE ON SCHEMA public TO "$USER";"
+$PSQL -A -t -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO "$USER";"
+$PSQL -A -t -c "GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO "$USER";"
+$PSQL -A -t -c "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "$USER";"
+
+$PSQL -d "$DB" -U $MASTERUSER -A -t -c "select 'grant select on ' || tables.table_name || ' to "$USER";' FROM information_schema.tables where table_schema = 'public' and table_catalog='$DB';" | $PSQL -d "$DB" -U $MASTERUSER -A -t
+$PSQL -d "$DB" -U $MASTERUSER -A -t -c "select 'grant select on ' || sequences.sequence_name || ' to "$USER";' FROM information_schema.sequences where sequence_schema = 'public' and sequence_catalog='$DB';" | $PSQL -d "$DB" -U $MASTERUSER -A -t
+$PSQL -d "$DB" -U $MASTERUSER -A -t -c "select 'grant select on ' || views.table_name || ' to "$USER";' FROM information_schema.views where table_schema = 'public' and table_catalog='$DB';" | $PSQL -d "$DB" -U $MASTERUSER -A -t
