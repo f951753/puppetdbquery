@@ -1,0 +1,905 @@
+#!/bin/bash
+#
+# This script permit various puppetdb/console queries
+#
+# Author : f951753
+
+# Get the major puppet version (3 and 4 version are supported at this time)
+#PUPVER=$(facter -p puppetversion 2>/dev/null | sed 's/\..*//')
+# Facter is two slow so let's get the information where puppetvsersion fact get's it instead...
+PUPVER=$(grep "PUPPETVERSION ="  $(locate /puppet/version.rb) | tail -1 | sed -e 's/^.* //' -e 's/\x27//' -e 's/\..*//')
+if [ "$PUPVER" != "3" -a $PUPVER != "4" ]
+  then
+  echo "Error: $(basename ${0}) does not support Puppet version $PUPVER"
+  exit 1
+fi
+
+# Timezone
+TZ="CET"
+
+# LOCALDATE format for postgresql
+LOCALDATE="set datestyle='SQL,DMY'"
+
+# By default order by time
+ORDER="time"
+
+# By default print the 20 lasts reports like PE dashboard
+NBLINE="20"
+
+# Login/Password to acces the database
+USERNAME="readonly"
+export PGPASSWORD=$USERNAME
+
+# Set default time delay (2h)
+TIME="120"
+
+# Set unresponsive time delay
+UNRESPONSIVETIME="108000"
+
+# Transform UNRESPONSIVETIME in DIFFTIME
+DIFFTIME=\'$(date -u -d "now - $UNRESPONSIVETIME seconds" '+%Y-%m-%d %H:%M:%S')\'
+
+# Postgres Puppetdb/console database hostname
+HOST=localhost
+
+# let's find where psql is hidding
+PSQLBIN=$(locate /bin/psql | tail -1)
+if [ "X$PSQLBIN" == "X" ]
+  then
+  if [ -x /opt/puppet/bin/psql ]
+    then
+    PSQLBIN=/opt/puppet/bin/psql
+  elif [ -x /opt/puppetlabs/bin/psql ]
+    then
+    PSQLBIN=/opt/puppetlabs/bin/psql
+  else
+    echo "Error: $(basename ${0}) can't find psql binary"
+    exit 2
+  fi
+fi
+
+# Get the database name
+case "$PUPVER" in
+3)
+  # In Puppet 3.x, find the database name like /console/
+  DATABASE=$($PSQLBIN -h $HOST --username=$USERNAME --list | awk '/console/{print $1}' | head -1)
+  PSQLCMD="$PSQLBIN -h $HOST -d $DATABASE -U $USERNAME -A -t -c"
+  # In Puppet 3.x, find the database name like /puppetdb/ (needed to find hostname/environment relation and fact or catalog informations)
+  DATABASE2=$($PSQLBIN -h $HOST --username=$USERNAME --list | awk '/puppetdb/{print $1}' | head -1)
+  PSQLCMD2="$PSQLBIN -h $HOST -d $DATABASE2 -U $USERNAME -A -t -c"
+  ;;
+4)
+  # In Puppet 4.x, find the database name like /puppetdb/
+  DATABASE=$($PSQLBIN -h $HOST --username=$USERNAME --list | awk '/puppetdb/{print $1}' | head -1)
+  PSQLCMD="$PSQLBIN -h $HOST -d $DATABASE -U $USERNAME -A -t -c"
+  PSQLCMD2=$PSQLCMD
+  ;;
+esac
+
+# Set return code to zero
+RETURN=0
+
+# Set status to null
+STATUS=""
+
+# Set NBREPORT to null
+NBREPORT=""
+
+# Set COLOR to null
+COLOR=""
+
+# Usage function
+print_usage() {
+  echo "Usage: $(basename ${0}) [-t run] [-h] [-c] [-f] [-r] [-a] [-C] [-m] [-F] [-R] [-A <number>] [-S <failed|noop|change|unchanged|unreported|unresponsive>] [-E <environment>] [<hostname> <hostname> ...]"
+  echo "       -a => all, by default only the $NBLINE last nodes runs are print"
+  echo "       -A => number of older report to print, by default only the last report is print"
+  echo "       -S => status <failed|noop|change|unchanged|unreported|unresponsive>"
+  echo "       -E => environment, select hostname by environment"
+  echo "       -r => report, print the last report of a run node"
+  echo "       -R => resources, print the resources used in a run node"
+  echo "       -F => facts, print the facts used in a run node"
+  echo "       -m => metrics, print the metrics of a run node"
+  echo "       -L => catalog, print the catalog of a run node"
+  echo "       -c => count, give a global status count in the header"
+  echo "       -f => force color even if we don't use a terminal"
+  echo "       -h => help"
+  echo "       <hostname> parameter and -a parameters are mutually exclusive"
+  echo
+  echo "       $(basename ${0}) [-t event] [-h] [-f] [-v] [-T <number_of_minutes] [-d <"YYYY-MM-DD hh:mm">] [-D <"YYYY-MM-DD hh:mm">] [-o <hostname|time|status|class|resource_type|resource_title>] [-s <desc|asc>] [-H hostname] [-C class] [-S <failed|noop|changed|unchanged>] [-E <environment>]"
+  echo "       -T => specify a time period in minutes, 120 minutes is the default"
+  echo "       -d => specify a time period from <YYYY-MM-DD hh:mm> to now"
+  echo "       -D => specify a time period from -d parameter to <YYYY-MM-DD hh:mm>"
+  echo "       -o => specify the column to sort <hostname|time|status|class|resource_type|resource_title>"
+  echo "       -s => specify the sort order <desc|asc>"
+  echo "       -H => restrict ouput to a hostname like h|host|hostname"
+  echo "       -C => restrict ouput to a classname like Ora|Oradb|Oradb::node, Class parameter is case sensitive"
+  echo "       -S => restrict ouput to a status <failed|noop|changed|unchanged>"
+  echo "       -E => restrict ouput to an environment"
+  echo "       -v => verbose, print more event information"
+  echo "       -f => force color even if we don't use a terminal"
+  echo "       -h => help"
+  echo
+  echo "       $(basename ${0}) [-t status] [-h] [-f] [-v] [-T <number_of_minutes] [-d <"YYYY-MM-DD hh:mm">] [-D <"YYYY-MM-DD hh:mm">] [-S <failed|noop|changed|unchanged>] [-E <environment>] [-s <desc|asc>]"
+  echo "       -T => specify a time period in minutes, 120 minutes is the default"
+  echo "       -d => specify a time period from <YYYY-MM-DD hh:mm> to now"
+  echo "       -D => specify a time period from -d parameter to <YYYY-MM-DD hh:mm>"
+  echo "       -S => specify a status <failed|noop|changed|unchanged>, failed is the default status"
+  echo "       -E => restrict ouput to an environment"
+  echo "       -s => specify the sort order <desc|asc>"
+  echo "       -v => verbose, print more status information"
+  echo "       -f => force color even if we don't use a terminal"
+  echo "       -h => help"
+  exit 1
+}
+
+# Status_id function
+status_id () {
+   PARAMETER=$1
+   $PSQLCMD "$LOCALDATE; select id from report_statuses where status = '$PARAMETER';"
+}
+
+# Status function
+print_status () {
+   PARAMETER=$1
+   if [ -n "$REPORT" ]
+      then
+      printf "$WHITE%-14s%-18s%-10s%-6s%-7s%-5s%-8s%-10s$NORMAL\n" Node "Latest report" Status Total Failed Noop Changed Unchanged
+   fi
+   # Change IFS to | for variable evaluation
+   OIFS=$IFS ; IFS="|" ; set -- $PARAMETER ; IFS=$OIFS
+   # Get the values
+   REPORTID=$1
+   NODE=$2
+   # Remove domain name if present
+   SHORTNODE=$(echo $NODE | sed 's/\..*//' | cut -c1-14)
+
+   case "$PUPVER" in
+   3)
+     RSTATUS=$3
+     # Remove seconds.milliseconds information
+     TIME=$(echo "$4 $5" | sed -e 's/:..\.[0-9]*//' -e 's/+02//')
+     ;;
+   4)
+     # Get status
+     NOOPID=$($PSQLCMD "$LOCALDATE; select noop from reports where id = $REPORTID;")
+     if [ $NOOPID == "t" ]
+       then
+       RSTATUS="noop"
+     else
+       STATUSID=$($PSQLCMD "$LOCALDATE; select status_id from reports where id = $REPORTID;")
+       RSTATUS=$($PSQLCMD "$LOCALDATE; select status from report_statuses where id = $STATUSID;")
+     fi
+     # Get time
+     TIME=$($PSQLCMD "$LOCALDATE; select start_time from reports where id = $REPORTID;")
+     # Remove seconds.milliseconds information
+     TIME=$(echo "$TIME" | sed -e 's/:..\.[0-9]*//' -e "s/ $TZ//" | awk '{print     $2,$1}')
+     ;;
+   esac
+
+   # If no status then no report
+   if [ "X$RSTATUS" == "X" ] ; then TIME="Has not reported" ; fi
+
+   # Change color status
+   case $RSTATUS in
+   failed)
+       NAMESTATUS=$WHITE
+       COLORSTATUS=$RED
+       failed=0 ; noop=0 ; changed=0 ; unchanged=0 ; total=0 ; out_of_sync=0
+       RETURN=3;;
+   changed)
+       NAMESTATUS=$WHITE
+       COLORSTATUS=$BLUE
+       failed=0 ; noop=0 ; changed=0 ; unchanged=0 ; total=0 ; out_of_sync=0;;
+   noop|pending)
+       NAMESTATUS=$WHITE
+       COLORSTATUS=$YELLOW
+       failed=0 ; noop=0 ; changed=0 ; unchanged=0 ; total=0 ; out_of_sync=0;;
+   unchanged)
+       NAMESTATUS=$WHITE
+       COLORSTATUS=$GREEN
+       failed=0 ; noop=0 ; changed=0 ; unchanged=0 ; total=0 ; out_of_sync=0;;
+   *) # No color
+       NAMESTATUS=$NORMAL
+       COLORSTATUS=$NORMAL;;
+   esac
+
+   case "$PUPVER" in
+   3)
+     # Get the run info from the database
+     PSQL=$($PSQLCMD "select name,value from metrics where report_id = $REPORTID and category = 'resources';" 2>/dev/null | sed -e 's/\.[0-9]*//' -e 's/|/=/g')
+     ;;
+   4)
+     # Get the run info from the database
+     PSQL=$($PSQLCMD "$LOCALDATE; select metrics from reports where id = $REPORTID;")
+     # Parse json result
+     PSQL=$(echo $PSQL| sed -e 's/\[//g' -e 's/\]//g' -e 's/"//g' -e 's/{//g' -e 's/},/\n/g' -e 's/ *name: //g' -e 's/, value: /=/g' | grep resources | sed 's/,.*//')
+     ;;
+   esac
+
+   # Evaluate the result
+   eval $PSQL
+
+   # In PE 3.x, noop=out_of_sync - failed
+   if [ -n "$out_of_sync" -a "$out_of_sync" != "$changed" ] ; then let noop=$out_of_sync-$failed ; fi
+
+   # Print the run info
+   printf "$NAMESTATUS%-14s$NORMAL%-18s$COLORSTATUS%-10s%-6s%-7s%-5s%-8s%-10s$NORMAL\n" $SHORTNODE "$TIME" "$RSTATUS" $total $failed $noop $changed $unchanged
+
+   # Print report if asked
+   if [ -n "$REPORT" -a "$TIME" != "Has not reported" ]
+      then
+      print_report $REPORTID
+   fi
+
+   # Print the ressources if asked
+   if [ -n "$RESOURCE" -a "$TIME" != "Has not reported" ]
+      then
+      print_resource $REPORTID
+   fi
+
+   # print the metrics if asked
+   if [ -n "$METRIC" -a "$TIME" != "Has not reported" ]
+      then
+      print_metric $REPORTID $total
+   fi
+
+   # print the facts if asked
+   if [ -n "$FACT" -a "$TIME" != "Has not reported" ]
+      then
+      print_fact $NODE
+   fi
+
+   # print the catalog if asked
+   if [ -n "$CATALOG" -a "$TIME" != "Has not reported" ]
+      then
+      print_catalog $NODE
+   fi
+}
+
+# Report function
+print_report () {
+   PARAMETER=$1
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+   SHORTNODEPAD=$(printf "$WHITE%-14s$NORMAL" $SHORTNODE)
+   # Print a header
+   echo -e "${WHITE}Node          Time - Level - Message - Source - File - Line$NORMAL"
+
+   case "$PUPVER" in
+   3)
+     # Print the last report
+     $PSQLCMD "$LOCALDATE; select (time at time zone 'UTC'),level,message,source,file,line from report_logs where report_id = $PARAMETER order by time asc;" | sed -e 's/|/ - /g' -e 's/:..\.[0-9]* CEST//' -e 's/  -//g' -e 's/ - $//' -e "s/err -.*$/$SEDRED&$SEDNORMAL/" -e "s/warning -.*$/$SEDYELLOW&$SEDNORMAL/" -e 's/\(^[0-9\/]*\) \([0-9:]*\) /\2 \1 /' -e "s/^/$SHORTNODEPAD/"
+     ;;
+   4)
+     # Print the last report
+     $PSQLCMD "$LOCALDATE; select logs from reports where id = $PARAMETER;" | sed -e 's/\[//g' -e 's/\]//g' -e 's/"//g' -e 's/{//g' -e 's/},/\n/g' -e 's/}//g' -e 's/file: /file=/g' -e 's/line: /line=/g' -e 's/tags: /tags=/g' -e 's/time: /time=/g' -e 's/level: /level=/g' -e 's/source: /source=/g' -e 's/message: /message=/g' -e 's/,//g' | sed -e 's/tags=[ _.:a-zA-Z0-9]*time=/time=/' -e 's/\([a-z]*=\)\([^ ]*\)/\1"\2"/g' -e 's/"//12' -e 's/$/"/g' -e 's/null//g' | while read LINE ; do eval $LINE ; time=$(echo $time | sed 's/[-T:.]/ /g' | awk '{print $3"/"$2"/"$1" "$4":"$5":"$6}') ; echo "$time - $level - $message - $source - $file - $line" | sed -e 's/  -//g' -e 's/ - $//' -e "s/^/$SHORTNODEPAD/" -e 's/:..\.[0-9]* CEST//' -e "s/err -.*$/$SEDRED&$SEDNORMAL/" -e "s/warning -.*$/$SEDYELLOW&$SEDNORMAL/" ; done
+     ;;
+   esac
+
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+}
+
+# Metric function
+print_metric () {
+   PARAMETER=$1
+   RESSOURCES=$2
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+   SHORTNODEPAD=$(printf "$WHITE%-14s$NORMAL" $SHORTNODE)
+   # Print a header
+   echo -e "${WHITE}Metrics                                 - Time in seconds$NORMAL"
+
+   case "$PUPVER" in
+   3)
+     # Print the metric
+     $PSQLCMD "$LOCALDATE; select * from metrics where report_id = $PARAMETER and category = 'time' order by id asc;;" | awk -F\| '{printf "%-38s - %7.2f s\n",$4,$5}' | sort -gk3
+     # Get the real time execution from report
+     START=$($PSQLCMD "set datestyle='SQL,MDY'; select (time at time zone 'UTC') from reports where id = $PARAMETER;")
+     STOP=$($PSQLCMD "set datestyle='SQL,MDY'; select (time at time zone 'UTC') from report_logs where report_id = $PARAMETER order by time desc limit 1;")
+     ;;
+   4)
+     # Print the metric
+     $PSQLCMD "$LOCALDATE; select metrics from reports where id = $PARAMETER;" | sed -e 's/\[//g' -e 's/\]//g' -e 's/"//g' -e 's/{//g' -e 's/},/\n/g' -e 's/}//g' | grep "category: time" | sed -e 's/ name: //g' -e 's/, value: / - /' -e 's/, category: time//' -e 's/\(- [0-9]*\.[0-9][0-9]\)\([0-9]*\)/\1 s/g' | awk '{printf "%-38s - %7.2f s\n",$1,$3}' | sort -gk3
+     # Get the real time execution from report
+     START=$($PSQLCMD "set datestyle='SQL,MDY'; select (start_time at time zone 'UTC') from reports where id = $PARAMETER;")
+     STOP=$($PSQLCMD "set datestyle='SQL,MDY'; select (receive_time at time zone 'UTC') from reports where id = $PARAMETER;")
+     ;;
+   esac
+
+   USTART=$(date -d "$START" '+%s')
+   USTOP=$(date -d "$STOP" '+%s')
+   let REALTIME=$USTOP-$USTART
+   let PERF=$RESSOURCES/$REALTIME
+   printf "run real time overall                  - %7.2f s (%d resources/s)\n"  "$REALTIME" "$PERF"
+
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+}
+
+# Resource function
+print_resource () {
+   PARAMETER=$1
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+   SHORTNODEPAD=$(printf "$WHITE%-14s$NORMAL" $SHORTNODE)
+   # Print a header
+   echo -e "${WHITE}Resources $NORMAL"
+
+   case "$PUPVER" in
+   3)
+     # Not supported in Puppet v3
+     echo -e "Warning : $(basename ${0})$YELLOW does not support this functionality on Puppet 3.x$NORMAL"
+     ;;
+   4)
+     # Print the metric
+     $PSQLCMD "$LOCALDATE; select resources from reports where id = $PARAMETER;" | sed -e 's/\[//g' -e 's/\]//g' -e 's/"//g' -e 's/{//g' -e 's/},/\n/g' -e 's/}//g' -e 's/: /:/g' -e 's/, / - /g' -e 's/- [a-z]*: -//g' | sed -e 's/^ //g'
+     ;;
+   esac
+
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+}
+
+# Fact function
+print_fact () {
+   PARAMETER=$1
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+   SHORTNODEPAD=$(printf "$WHITE%-14s$NORMAL" $SHORTNODE)
+   # Print a header
+   echo -e "${WHITE}Facts $NORMAL"
+
+   case "$PUPVER" in
+   3)
+     CMD=$PSQLCMD2
+     ;;
+   4)
+     CMD=$PSQLCMD
+     ;;
+   esac
+
+   FACTSETID=$($CMD "select id from factsets where certname = '$PARAMETER';")
+   $CMD "select fact_paths.path,fact_values.value_string from facts inner join fact_paths on facts.fact_path_id = fact_paths.id inner join fact_values on facts.fact_value_id = fact_values.id where facts.factset_id = '$FACTSETID' order by 1 asc;" | sed -e 's/|/ => /' -e '/^$/d'
+
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+}
+
+# Fact catalog
+print_catalog () {
+   PARAMETER=$1
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+   SHORTNODEPAD=$(printf "$WHITE%-14s$NORMAL" $SHORTNODE)
+   # Print a header
+   echo -e "${WHITE}Catalog $NORMAL"
+
+   case "$PUPVER" in
+   3)
+     CMD=$PSQLCMD2
+     ;;
+   4)
+     CMD=$PSQLCMD
+     ;;
+   esac
+
+   CATALOGID=$($CMD "select id from catalogs where certname = '$PARAMETER';")
+   $CMD "select title,tags,type,file,line from catalog_resources where catalog_id='$CATALOGID';" | sed -e 's/|/ - /g' -e '/^$/d'
+
+   # Print a separator to add visibility
+   echo "-----------------------------------------------------------------------------"
+}
+
+# Run function
+run() {
+# Print a global status count if specified
+  if [ -n "$COUNT" ]
+     then
+
+     case "$PUPVER" in
+     3)
+       CHANGED=$($PSQLCMD "select count(name) from nodes where hidden = 'false' and status = 'changed' and reported_at > $DIFFTIME;")
+       UNCHANGED=$($PSQLCMD "select count(name) from nodes where hidden = 'false' and status = 'unchanged' and reported_at > $DIFFTIME;")
+       NOOP=$($PSQLCMD "select count(name) from nodes where hidden = 'false' and status = 'noop' and reported_at > $DIFFTIME;")
+       FAILED=$($PSQLCMD "select count(name) from nodes where hidden = 'false' and status = 'failed' and reported_at > $DIFFTIME;")
+       UNREPORTED=$($PSQLCMD "select count(name) from nodes where hidden = 'false' and status is null;")
+       UNRESPONDSIVE=$($PSQLCMD "select count(name) from nodes where hidden = 'false' and status is not null and reported_at < $DIFFTIME;")
+       HIDDEN=$($PSQLCMD "select count(name) from nodes where hidden = 'true';")
+       ;;
+     4)
+       CHANGED_ID=$(status_id changed)
+       CHANGED=$($PSQLCMD "select count(reports.certname) from reports,certnames where status_id = '$CHANGED_ID' and noop != 't' and reports.id = certnames.latest_report_id and receive_time > $DIFFTIME;")
+       UNCHANGED_ID=$(status_id unchanged)
+       UNCHANGED=$($PSQLCMD "select count(reports.certname) from reports,certnames where status_id = '$UNCHANGED_ID' and noop != 't' and reports.id = certnames.latest_report_id and receive_time > $DIFFTIME;")
+       NOOP=$($PSQLCMD "select count(reports.certname) from reports,certnames where noop = 't' and reports.id = certnames.latest_report_id and receive_time > $DIFFTIME;")
+       FAILED_ID=$(status_id failed)
+       FAILED=$($PSQLCMD "select count(reports.certname) from reports,certnames where status_id = '$FAILED_ID' and noop != 't' and reports.id = certnames.latest_report_id and receive_time > $DIFFTIME;")
+       UNREPORTED=$($PSQLCMD "select count(reports.certname) from reports,certnames where status_id is null and reports.id = certnames.latest_report_id;")
+       UNRESPONDSIVE=$($PSQLCMD "select count(reports.certname) from reports,certnames where status_id is not null and reports.id = certnames.latest_report_id and receive_time < $DIFFTIME;")
+       # In puppet 4.x no more hidden column so assume zero
+       HIDDEN=0
+       ;;
+     esac
+
+     let ALL=$CHANGED+$UNCHANGED+$NOOP+$FAILED+$UNREPORTED+$UNRESPONDSIVE
+     printf "$WHITE%-15s$NORMAL%-13s%-4s$RED%-7s%-4s     $YELLOW%-5s%-4s     $NORMAL$WHITE%-4s%-4s\n               $NORMAL%-11s%-4s  $GREEN%-10s%-4s  $BLUE%-8s%-4s  $NORMAL%-6s%-4s\n\n" "Global Status:" Unresponsive: $UNRESPONDSIVE Failed: $FAILED Noop: $NOOP All: $ALL Unreported: $UNREPORTED Unchanged: $UNCHANGED Changed: $CHANGED Hidden: $HIDDEN
+  fi
+
+  # Construct the SQL statements parameters
+  case "$PUPVER" in
+    3)
+      COLUMN1="last_apply_report_id,name,status,(reported_at at time zone 'UTC')"
+      COLUMN2="id,host,status,(time at time zone 'UTC')"
+      TABLE1="nodes"
+      TABLE2="reports"
+      WHERE1="where hidden = 'false'"
+      WHERE2="where host"
+      AND0="and name"
+      AND1=""
+      AND2=""
+      AND3=""
+      if [ -n "$STATUS" ]
+        then
+        case $STATUS in
+          unreported)
+            AND1="and status is null"
+            ;;
+          unresponsive)
+            AND1="and last_apply_report_id is not null"
+            AND2="and reported_at < $DIFFTIME"
+            ;;
+          *)
+            AND1="and status = '$STATUS'"
+            ;;
+        esac
+      fi
+      if [ -n "$ENVIRONMENT" ]
+        then
+        ENVID=$($PSQLCMD2 "select id from environments where name = '$ENVIRONMENT';")
+        if [ "X$ENVID" == "X" ]
+          then
+          echo -e "Error: $(basename ${0})$RED Unkown environment $ENVIRONMENT$NORMAL"
+          AENV=$($PSQLCMD2 -A -t -c "select name from environments;" | sort | tr '\n' ' ')
+          echo "Available environment : $AENV"
+          exit 7
+        fi
+        NODEENV=$($PSQLCMD2 "select certname from catalogs where environment_id = '$ENVID';")
+      fi
+      ORDER1="order by reported_at desc limit $NBLINE"
+      ORDER2="order by time desc limit $NBREPORT"
+      ORDER3="order by time desc limit 1"
+      ;;
+    4)
+      COLUMN1="latest_report_id,reports.certname,status_id,(receive_time at time zone 'UTC')"
+      COLUMN2="id,certname,status_id,(receive_time at time zone 'UTC')"
+      TABLE1="certnames,reports"
+      TABLE2="reports"
+      WHERE1="where latest_report_id = reports.id"
+      WHERE2="where certname"
+      AND0="and reports.certname"
+      AND1=""
+      AND2=""
+      AND3=""
+      if [ -n "$STATUS" ]
+        then
+        case $STATUS in
+          unreported)
+            AND1="and latest_report_id is null"
+            ;;
+          unresponsive)
+            AND1="and latest_report_id is not null"
+            AND2="and reports.id = certnames.latest_report_id and receive_time < $DIFFTIME"
+            ;;
+          noop)
+            AND2="and noop = 't'"
+            ;;
+          *)
+            STATUS_ID=$(status_id $STATUS)
+            AND1="and status_id = '$STATUS_ID'"
+            AND2="and noop != 't'"
+            ;;
+        esac
+      fi
+      if [ -n "$ENVIRONMENT" ]
+        then
+        ENVID=$($PSQLCMD "select id from environments where environment = '$ENVIRONMENT';")
+        if [ "X$ENVID" == "X" ]
+          then
+          echo -e "Error: $(basename ${0})$RED Unkown environment $ENVIRONMENT$NORMAL"
+          AENV=$($PSQLCMD "select environment from environments;" | sort | tr '\n' ' ')
+          echo "Available environment : $AENV"
+          exit 7
+        fi
+        TABLE="certnames,reports,environments"
+        AND3="and environments.id = '$ENVID'"
+      fi
+      ORDER1="order by receive_time desc limit $NBLINE"
+      ORDER2="order by receive_time desc limit $NBREPORT"
+      ORDER3="order by receive_time desc limit 1"
+      ;;
+  esac
+
+  # Now get the hostname(s) if specified
+  if [ -n "$1" ]
+      then
+      for HOSTNAME in $*
+         do
+         ASQL=$($PSQLCMD "$LOCALDATE; select $COLUMN1 from $TABLE1 $WHERE1 $AND0 = '$HOSTNAME' $AND1;" | sed 's/ /|/g')
+
+         # If ASQL is null, because we specified a status and this status is not the one on the last run, then get the last run with this status from reports table
+         if [ -z "$ASQL" ]
+           then
+           ASQL=$($PSQLCMD "$LOCALDATE; select $COLUMN2 from $TABLE2 $WHERE2 = '$HOSTNAME' $AND1 $ORDER3;" | sed 's/ /|/g')
+         fi
+
+         # If ASQL is null
+         if [ -z "$ASQL" ]
+           then
+           echo -e "Error: $(basename ${0})$RED Unkown hostname $HOSTNAME$NORMAL"
+           exit 6
+         fi
+         PSQL="$PSQL $ASQL"
+      done
+  # No hostname specified, take the $NBLINE lasts nodes runs or all if -a was specified
+  else
+      # If have specified an environment
+      if [ -n "$ENVIRONMENT" ]
+        then
+        case "$PUPVER" in
+          3)
+            PSQL=$(for i in $NODEENV
+              do
+              $PSQLCMD "$LOCALDATE; select $COLUMN1 from $TABLE1 $WHERE1 $AND0 = '$i' $AND1 $AND2 $ORDER1;" | sed 's/ /|/g'
+            done | sort -r)
+            ;;
+          4)
+            PSQL=$($PSQLCMD "$LOCALDATE; select $COLUMN1 from $TABLE1 $WHERE1 $AND1 $AND2 $AND3 $ORDER1;" | sed 's/ /|/g')
+            ;;
+          esac
+
+        # We didn't specify an environment
+      else
+        PSQL=$($PSQLCMD "$LOCALDATE; select $COLUMN1 from $TABLE1 $WHERE1 $AND1 $AND2 $ORDER1;" | sed 's/ /|/g')
+      fi
+  fi
+
+  # Print the header but only if the psql give a result and we don't print report
+  if [ -n "$PSQL" -a -z "$REPORT" ]
+    then
+    printf "$WHITE%-14s%-18s%-10s%-6s%-7s%-5s%-8s%-10s$NORMAL\n" Node "Latest report" Status Total Failed Noop Changed Unchanged
+  fi
+
+  # Loop on the psql result
+  for i in $PSQL
+    do
+    # Get older reports status if asked
+    if [ -n "$NBREPORT" ]
+      then
+      # We need the hostname in NODE variable
+      NODE=$(echo $i | awk -F\| '{print $2}')
+
+      # Dont't accept negative number
+      if [ $NBREPORT -lt 0 ] ; then NBREPORT=0 ; fi
+
+      PSQL=$($PSQLCMD "$LOCALDATE; select $COLUMN2 from $TABLE2 $WHERE2 = '$NODE' $AND1 $ORDER2;" | sed 's/ /|/g')
+
+      # Loop on the psql result
+      for j in $PSQL
+         do
+         print_status $j
+      done
+   # We didn't ask for older reports
+    else
+      print_status $i
+    fi
+  done
+
+  exit $RETURN
+}
+
+# SQL statement to print the events
+print_event() {
+  $PSQLCMD2 "$LOCALDATE;
+  select $COLUMN
+  from resource_events
+  $INNER1
+  $INNER2
+  where timestamp > '$TIME1' $TIME2
+  $AND1
+  $AND2
+  $AND3
+  $AND4
+  $ORDER1;" \
+  | sed -e 's/\.[0-9]*//' \
+      -e 's/+02//' \
+      -e 's/|/ /g' \
+      -e "s/^[a-z0-9]* /${SEDNORMAL}${SEDWHITE}&${SEDNORMAL}/" \
+      -e "s/noop/${SEDYELLOW}&/" \
+      -e "s/failure/${SEDRED}failed/" \
+      -e "s/success/${SEDBLUE}changed/" \
+      -e "s/skipped/${SEDGREEN}unchanged/" \
+      -e 's/  / /g' \
+      -e 's/ CEST//g'
+}
+
+# Event function
+event() {
+  # Compose the sql command
+  case "$PUPVER" in
+    3)
+      ENVIRONMENT_COLUMN="environments.name"
+      INNER1="inner join reports on resource_events.report = reports.hash"
+      ;;
+    4)
+      ENVIRONMENT_COLUMN="environments.environment"
+      INNER1="inner join reports on resource_events.report_id = reports.id"
+      ;;
+  esac
+
+  # Verify order parameter and Compose the sql command
+  if [ -n "$ORDER" ]
+    then
+    case $ORDER in
+      hostname) ORDER="certname";;
+      time) ORDER="timestamp";;
+      class) ORDER="containing_class";;
+      status) ;;
+      resource_type) ;;
+      resource_title) ;;
+      *) print_usage ;;
+    esac
+  fi
+
+  # Verify sort order
+  if [ -n "SORT" ]
+    then
+    case $SORT in
+      asc) ;;
+      desc) ;;
+      *) SORT='desc' ;;
+    esac
+  fi
+
+  # Verify status and Compose the sql command
+  if [ -n "$STATUS" ]
+    then
+    case $STATUS in
+    failed)    AND1="and status = 'failure'";;
+    noop)      AND1="and status = 'noop'";;
+    changed)   AND1="and status = 'success'";;
+    unchanged) AND1="and status = 'skipped'";;
+    *) print_usage ;;
+    esac
+  fi
+
+  # Compose the sql command
+  if [ -n "$CLASS" ]
+    then
+    AND2="and resource_events.containing_class like '%$CLASS%'"
+  fi
+
+  # Compose the sql command
+  if [ -n "$CERTNAME" ]
+    then
+    AND3="and reports.certname like '%$CERTNAME%'"
+  fi
+
+  # Compose the sql command
+  if [ -n "$ENVIRONMENT" ]
+    then
+    AND4="and $ENVIRONMENT_COLUMN like '%$ENVIRONMENT%'"
+    INNER2="inner join environments on reports.environment_id = environments.id"
+    ADDTITLE="Environment "
+    ADD="$ENVIRONMENT_COLUMN,"
+  fi
+
+  # Calculate the period time
+  if [ -n "$DATE1" ]
+    then
+    TIME1=$DATE1
+    if [ -n "$DATE2" ]
+      then
+      TIME2="and timestamp < '$DATE2'"
+    fi
+  else
+    TIME1=$(date -d "now - $TIME minutes" '+%Y-%m-%d %H:%M:%S')
+  fi
+
+  # Print the header and Compose the sql command
+  if [ -n "$VERBOSE" ]
+    then
+    TITLE="${WHITE}Hostname Date Time Status ${ADTITLE}Class Resource_type Resource_title Property Old_value New_Value Message File Line Containment_path$NORMAL"
+    COLUMN="reports.certname,timestamp,status,${ADD}containing_class,resource_type,resource_title,property,old_value,new_value,message,file,line,containment_path"
+  else
+    TITLE="${WHITE}Hostname Date Time Status ${ADTITLE}Class Resource_type Resource_title$NORMAL"
+    COLUMN="reports.certname,timestamp,status,${ADD}containing_class,resource_type,resource_title"
+  fi
+
+  echo -e "$TITLE"
+  ORDER1="order by $ORDER $SORT"
+  print_event
+  echo -e "$NORMAL"
+}
+
+# Status function
+status() {
+  # Define a temp file
+  TMP="/tmp/tmp.$$"
+
+  # Compose the sql command
+  case "$PUPVER" in
+    3)
+      ENVIRONMENT_COLUMN="environments.name"
+      INNER1="inner join reports on resource_events.report = reports.hash"
+      ;;
+    4)
+      ENVIRONMENT_COLUMN="environments.environment"
+      INNER1="inner join reports on resource_events.report_id = reports.id"
+      ;;
+  esac
+
+  # Verify status and Compose the sql command
+  if [ -n "$STATUS" ]
+    then
+    case $STATUS in
+    failed)    AND1="and status = 'failure'"
+               COLOR=$RED;;
+    noop)      AND1="and status = 'noop'"
+               COLOR=$YELLOW;;
+    changed)   AND1="and status = 'success'"
+               COLOR=$BLUE;;
+    unchanged) AND1="and status = 'skipped'"
+               COLOR=$GREEN;;
+    *) print_usage ;;
+    esac
+  # By default print failed status
+  else
+    AND1="and status = 'failure'"
+    COLOR=$RED
+  fi
+
+  # Compose the sql command
+  if [ -n "$ENVIRONMENT" ]
+    then
+    AND2="and $ENVIRONMENT_COLUMN like '%$ENVIRONMENT%'"
+    INNER2="inner join environments on reports.environment_id = environments.id"
+    ADD=",$ENVIRONMENT_COLUMN"
+  fi
+
+  # Calculate the period time
+  if [ -n "$DATE1" ]
+    then
+    TIME1=$DATE1
+    if [ -n "$DATE2" ]
+      then
+      TIME2="and timestamp < '$DATE2'"
+    fi
+  else
+    TIME1=$(date -d "now - $TIME minutes" '+%Y-%m-%d %H:%M:%S')
+  fi
+
+  # Compose the sql command
+  COLUMN="distinct resource_events.containing_class,reports.certname$ADD"
+
+  if [ -n "$VERBOSE" ]
+    then
+     SED='sed -e s/|/,/g'
+  else
+     SED='sed -e s/|/,/g -e s/::[a-zA-Z0-9_:]*,/,/g'
+  fi
+
+  $PSQLCMD2 "$LOCALDATE;
+  select $COLUMN
+  from resource_events
+  $INNER1
+  $INNER2
+  where timestamp > '$TIME1' $TIME2
+  $AND1
+  $AND2;" | $SED | sort -u > $TMP
+
+  # Verify sort order
+  if [ -n "SORT" ]
+    then
+    case $SORT in
+      asc) SORT='sort -gk 3';;
+      desc) SORT='sort -grk 3';;
+      *) SORT='sort';;
+    esac
+  fi
+
+  # Calculate the longest line
+  SIZE=$(awk -F, '{print $1}' $TMP | wc -L)
+
+  # Loop on the class and find the server number affected
+  for i in $(awk -F, '!/Main/{print $1}' $TMP | sort -u)
+    do
+    NB=$(grep -c "$i," $TMP)
+    printf "$WHITE%-${SIZE}s $NORMAL:$COLOR %-5s$NORMAL\n" $i $NB
+  done | $SORT
+
+  rm -f $TMP
+}
+
+# Get command line parameters
+while getopts t:T:d:D:o:s:H:C:S:E:A:afhvcrmRFL opt
+  do
+  case "$opt" in
+    t)TYPE="$OPTARG";;
+    T)TIME="$OPTARG";;
+    d)DATE1="$OPTARG";;
+    D)DATE2="$OPTARG";;
+    o)ORDER="$OPTARG";;
+    s)SORT="$OPTARG";;
+    f)COLOR="true";;
+    H)CERTNAME="$OPTARG";;
+    C)CLASS="$OPTARG";;
+    S)STATUS="$OPTARG";;
+    E)ENVIRONMENT="$OPTARG";;
+    v)VERBOSE="true";;
+    c)COUNT="true";;
+    r)REPORT="true";;
+    m)METRIC="true";;
+    R)RESOURCE="true";;
+    F)FACT="true";;
+    L)CATALOG="true";;
+    A)NBREPORT=$OPTARG;;
+    a)NBLINE="ALL";;
+    h)print_usage;;
+    \?)print_usage;;
+ esac
+done
+
+# Shift the parameters already parsed
+shift $(($OPTIND - 1))
+
+# If we are running throught a terminal or if we force color usage, define some colors
+if [ -t 1 -o "$COLOR" == "true" ]
+  then
+  WHITE="\e[1m"
+  SEDWHITE=$(echo -e '\e[1m')
+  RED="\e[31m"
+  SEDRED=$(echo -e '\e[31m')
+  BLUE="\e[94m"
+  SEDBLUE=$(echo -e '\e[94m')
+  YELLOW="\e[33m"
+  SEDYELLOW=$(echo -e '\e[33m')
+  GREEN="\e[32m"
+  SEDGREEN=$(echo -e '\e[32m')
+  NORMAL="\e[0m"
+  SEDNORMAL=$(echo -e '\e[0m')
+# Else define null colors variables for security
+else
+  WHITE=""
+  SEDWHITE=""
+  RED=""
+  SEDRED=""
+  BLUE=""
+  SEDBLUE=""
+  YELLOW=""
+  SEDYELLOW=""
+  GREEN=""
+  SEDGREEN=""
+  NORMAL=""
+  SEDNORMAL=""
+fi
+
+if [ -n "$TYPE" ]
+  then
+  case $TYPE in
+    run)
+      run $*
+      ;;
+    event)
+      event
+      ;;
+    status)
+      status
+      ;;
+    *)
+      print_usage
+      ;;
+  esac
+else
+  run
+fi
