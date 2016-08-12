@@ -7,7 +7,8 @@
 # Get the major puppet version (3 and 4 version are supported at this time)
 #PUPVER=$(facter -p puppetversion 2>/dev/null | sed 's/\..*//')
 # Facter is two slow so let's get the information where puppetvsersion fact get's it instead...
-PUPVER=$(grep "PUPPETVERSION ="  $(locate /puppet/version.rb) | tail -1 | sed -e 's/^.* //' -e 's/\x27//' -e 's/\..*//')
+PUPVERFULL=$(grep "PUPPETVERSION ="  $(locate /puppet/version.rb) | tail -1 | sed -e 's/^.* //' -e 's/\x27//g')
+PUPVER=$(echo $PUPVERFULL | sed -e 's/\..*//')
 if [ "$PUPVER" != "3" -a $PUPVER != "4" ]
   then
   echo "Error: $(basename ${0}) does not support Puppet version $PUPVER"
@@ -219,8 +220,13 @@ print_status () {
    # Evaluate the result
    eval $PSQL
 
-   # In PE 3.x, noop=out_of_sync - failed
-   if [ -n "$out_of_sync" -a "$out_of_sync" != "$changed" ] ; then let noop=$out_of_sync-$failed ; fi
+   # In PE 3.x, noop=out_of_sync - failed, but not for PE 3.8
+   if [ $(echo $PUPVERFULL | awk -F. '{print $2}') -ne 8 ]
+     then
+     if [ -n "$out_of_sync" -a "$out_of_sync" != "$changed" ]
+       then let noop=$out_of_sync-$failed
+     fi
+   fi
 
    # Print the run info
    printf "$NAMESTATUS%-14s$NORMAL%-18s$COLORSTATUS%-10s%-6s%-7s%-5s%-8s%-10s$NORMAL\n" $SHORTNODE "$TIME" "$RSTATUS" $total $failed $noop $changed $unchanged
