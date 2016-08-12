@@ -221,7 +221,7 @@ print_status () {
    eval $PSQL
 
    # In PE 3.x, noop=out_of_sync - failed, but not for PE 3.8
-   if [ $(echo $PUPVERFULL | awk -F. '{print $2}') -ne 8 ]
+   if [ "$PUPVER" -eq 3 -a $(echo $PUPVERFULL | awk -F. '{print $2}') -ne 8 ]
      then
      if [ -n "$out_of_sync" -a "$out_of_sync" != "$changed" ]
        then let noop=$out_of_sync-$failed
