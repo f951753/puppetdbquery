@@ -373,7 +373,7 @@ print_fact () {
    echo "-----------------------------------------------------------------------------"
 }
 
-# Fact catalog
+# Catalog function
 print_catalog () {
    PARAMETER=$1
    # Print a separator to add visibility
@@ -385,15 +385,16 @@ print_catalog () {
    case "$PUPVER" in
    3)
      CMD=$PSQLCMD2
+     CATALOGID=$($CMD "select id from catalogs where certname = '$PARAMETER';")
+     $CMD "select title,tags,type,file,line from catalog_resources where catalog_id='$CATALOGID';" | sed -e 's/|/ - /g' -e '/^$/d'
      ;;
    4)
      CMD=$PSQLCMD
+     CERTNAMEID=$($CMD "select id from catalogs where certname = '$PARAMETER';")
+     $CMD "select title,tags,type,file,line from catalog_resources where certname_id='$CERTNAMEID';" | sed -e 's/|/ - /g' -e '/^$/d'
      ;;
    esac
-
-   CERTNAMEID=$($CMD "select id from catalogs where certname = '$PARAMETER';")
-   $CMD "select title,tags,type,file,line from catalog_resources where certname_id='$CERTNAMEID';" | sed -e 's/|/ - /g' -e '/^$/d'
-
+   
    # Print a separator to add visibility
    echo "-----------------------------------------------------------------------------"
 }
