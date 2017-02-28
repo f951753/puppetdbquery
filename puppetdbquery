@@ -3,6 +3,7 @@
 # This script permit various puppetdb/console queries
 #
 # Author : f951753
+# Url : https://github.com/f951753/puppetdbquery
 
 # Get the major puppet version (3 and 4 version are supported at this time)
 #PUPVER=$(facter -p puppetversion 2>/dev/null | sed 's/\..*//')
@@ -390,8 +391,8 @@ print_catalog () {
      ;;
    esac
 
-   CATALOGID=$($CMD "select id from catalogs where certname = '$PARAMETER';")
-   $CMD "select title,tags,type,file,line from catalog_resources where catalog_id='$CATALOGID';" | sed -e 's/|/ - /g' -e '/^$/d'
+   CERTNAMEID=$($CMD "select id from catalogs where certname = '$PARAMETER';")
+   $CMD "select title,tags,type,file,line from catalog_resources where certname_id='$CERTNAMEID';" | sed -e 's/|/ - /g' -e '/^$/d'
 
    # Print a separator to add visibility
    echo "-----------------------------------------------------------------------------"
@@ -517,7 +518,7 @@ run() {
           echo "Available environment : $AENV"
           exit 7
         fi
-        TABLE="certnames,reports,environments"
+        TABLE1="certnames,reports,environments"
         AND3="and environments.id = '$ENVID'"
       fi
       ORDER1="order by receive_time desc limit $NBLINE"
@@ -527,9 +528,9 @@ run() {
   esac
 
   # Now get the hostname(s) if specified
-  if [ -n "$1" ]
+  if [ $# -ne 0 ]
       then
-      for HOSTNAME in $*
+      for HOSTNAME in "$@"
          do
          ASQL=$($PSQLCMD "$LOCALDATE; select $COLUMN1 from $TABLE1 $WHERE1 $AND0 = '$HOSTNAME' $AND1;" | sed 's/ /|/g')
 
@@ -907,5 +908,5 @@ if [ -n "$TYPE" ]
       ;;
   esac
 else
-  run
+  run $*
 fi
