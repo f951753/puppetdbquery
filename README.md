@@ -205,7 +205,7 @@ Note : Readme.md can't handle color text, but in those examples there should be 
         xxxxxxxx 20/07/2016 15:35:38 noop Puppet_enterprise::Mcollective::Server::Plugins File C:/ProgramData/PuppetLabs/mcollective/etc/plugins/mcollective/agent/package.ddl
 
 ### To know the number of agents changed status by module for the last 24 hours
-        puppetdbquery-gitlab -t status -T 1440 -S changed -s desc
+        $ puppetdbquery -t status -T 1440 -S changed -s desc
         Apache            : 87
         Mongo             : 65
         Spark             : 62
