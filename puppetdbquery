@@ -619,16 +619,18 @@ print_event() {
   $AND3
   $AND4
   $ORDER1;" \
-  | sed -e 's/\.[0-9]*//' \
-      -e 's/+02//' \
-      -e 's/|/ /g' \
-      -e "s/^[a-z0-9]* /${SEDNORMAL}${SEDWHITE}&${SEDNORMAL}/" \
-      -e "s/noop/${SEDYELLOW}&/" \
-      -e "s/failure/${SEDRED}failed/" \
-      -e "s/success/${SEDBLUE}changed/" \
-      -e "s/skipped/${SEDGREEN}unchanged/" \
-      -e 's/  / /g' \
-      -e 's/ CEST//g'
+  | sed -e 's/+02//' \
+        -e 's/\.[0-9]\+//' \
+        -e 's/\.[a-z.\-]*|/|/' \
+        -e 's/|/ /g' \
+        -e "s/^[a-z0-9]* /${SEDNORMAL}${SEDWHITE}&${SEDNORMAL}/" \
+        -e "s/noop/${SEDYELLOW}&/" \
+        -e "s/failure/${SEDRED}failed/" \
+        -e "s/success/${SEDBLUE}changed/" \
+        -e "s/skipped/${SEDGREEN}unchanged/" \
+        -e 's/  / /g' \
+        -e 's/ CEST//g' \
+        -e 's/ CET//g'
 }
 
 # Event function
