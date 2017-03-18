@@ -1,17 +1,18 @@
-#puppetdbquery
+# puppetdbquery
+
 A script that query your PuppetDB and/or console database for status, runs, events, facts, metrics, ...
 It aims at bringing the console/dashboard informations to the command line
 
-##This script is compatible with :
+## This script is compatible with :
 * 3.x / 2015.x / 2016.x Puppet Enterprise versions
 * 4.x Community versions
 
-##Prerequisite
+## Prerequisite
 
-This script needs absolutly no prerequisite but a bash shell, it can query local database (default) or distant one with split installation for example.
+This script needs absolutly no prerequisite but a bash and psql command, it can query local database (default) or distant one with split installation for example.
 But in order to query the console and/or puppetdb database and for security reason you will need to create a readonly user for those databases, you can use the addreadonly2database script in this repo to do that.
 
-##Configuration
+## Configuration
 
 You probably need to configure some parameters of this script to reflect your Puppet configuration:
 
@@ -40,7 +41,7 @@ You probably need to configure some parameters of this script to reflect your Pu
         # Postgres Puppetdb/console database hostname
         HOST=localhost
 
-##Here are the possibles options for the script:
+## Here are the possibles options for the script:
 
         puppetdbquery [-t run] [-h] [-c] [-f] [-r] [-a] [-C] [-m] [-F] [-R] [-A <number>] [-S <failed|noop|change|unchanged|unreported|unresponsive>] [-E <environment>] [<hostname> <hostname> ...]
        -a => all, by default only the 20 last nodes runs are print
@@ -82,11 +83,11 @@ You probably need to configure some parameters of this script to reflect your Pu
        -f => force color even if we don't use a terminal
        -h => help
 
-##Use cases
+## Use cases
 
 Note : Readme.md can't handle color text, but in those examples there should be colors, for instance : failed=red, noop=yellow, unchanged=green, changed=blue, ...
 
-###To know the last run status
+### To know the last run status
         $ puppetdbquery -t run -c
         Global Status: Unresponsive:0  Failed:7       Noop:9       All:238
                        Unreported:0    Unchanged:90   Changed:132  Hidden:0
@@ -111,7 +112,7 @@ Note : Readme.md can't handle color text, but in those examples there should be 
         xxxxxxxx      20/07/2016 05:19  failed    0     0      0    0       0
         xxxxxxxx      20/07/2016 05:19  noop      264   0      4    0       260
         xxxxxxxx      20/07/2016 05:19  noop      292   0      7    0       285
-###To see the last changed report run of the xxxxxxx agent
+### To see the last changed report run of the xxxxxxx agent
         $ puppetdbquery -t run -S changed -r xxxxxxxx
         Node          Latest report     Status    Total Failed Noop Changed Unchanged
         xxxxxxxx      20/07/2016 14:02  changed   948   0      0    2       946
@@ -121,7 +122,7 @@ Note : Readme.md can't handle color text, but in those examples there should be 
         xxxxxxxx      14:03 20/07/2016 - notice - content changed '{md5}7165d7dcd3f133a5f30f70cae3d0fa71' to '{md5}24d42aea36eb600fc9fcc3ef39ab6138' - /Stage[main]/System::Motd/File[/etc/motd]/content - /home/puppet/environments/development/modules/system/manifests/motd.pp - 24
         xxxxxxxx      14:05 20/07/2016 - notice - Finished catalog run in 29.02 seconds - Puppet
         -----------------------------------------------------------------------------
-###To see the facts of the latest xxxxxxx agent run
+### To see the facts of the latest xxxxxxx agent run
         $ puppetdbquery -t run -F xxxxxxx
         Node          Latest report     Status    Total Failed Noop Changed Unchanged
         xxxxxxxx      20/07/2016 14:37  changed   948   0      0    11      937
@@ -184,7 +185,7 @@ Note : Readme.md can't handle color text, but in those examples there should be 
         run real time overall                  -  182.00 s (5 resources/s)
         -----------------------------------------------------------------------------
 
-###To see the last events
+### To see the last events
         $ puppetdbquery -t event
         Hostname Date Time Status Class Resource_type Resource_title
         xxxxxxxx 20/07/2016 15:35:52 noop Puppet_enterprise::Mcollective::Service Service pe-mcollective
