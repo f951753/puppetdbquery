@@ -4,7 +4,7 @@ A script that query your PuppetDB and/or console database for status, runs, even
 It aims at bringing the console/dashboard informations to the command line
 
 ## This script is compatible with :
-* 3.x / 2015.x / 2016.x Puppet Enterprise versions
+* 3.x / 2015.x / 2016.x / 2017.x Puppet Enterprise versions
 * 4.x Community versions
 
 ## Prerequisite
